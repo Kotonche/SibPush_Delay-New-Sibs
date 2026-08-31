@@ -19,6 +19,7 @@ from .processing.suspension import card_is_suspended_by_addon, mark_card_suspend
 LEGACY_SUSPENDED_TAG = "SibPush-suspended"
 VERSION_2_0_0 = (2, 0, 0)
 VERSION_2_1_0 = (2, 1, 0)
+VERSION_3_0_0 = (3, 0, 0)
 
 StartupMigration = Callable[[Collection, Callable[[], None] | None], None]
 
@@ -178,6 +179,145 @@ def migrate_legacy_suspension_tag(
     )
 
 
+def migrate_sibpush_2_card_markers(
+    col: Collection,
+    on_complete: Callable[[], None] | None = None,
+    on_success: Callable[[], None] | None = None,
+) -> None:
+    """Transfer SibPush 2.x provenance into Progressive Siblings' marker namespace."""
+
+    candidate_ids = set(col.find_cards(f"has-cd:{state.LEGACY_SIBPUSH_SUSPENDED_KEY}"))
+    candidate_ids.update(col.find_cards(f"has-cd:{state.LEGACY_SIBPUSH_IGNORED_KEY}"))
+    migrated_suspensions = 0
+    migrated_ignored = 0
+    skipped_count = 0
+
+    def _migrate_chunk(card_ids: Sequence[int]) -> None:
+        nonlocal migrated_suspensions, migrated_ignored, skipped_count
+        for card_id in card_ids:
+            card = col.get_card(card_id)
+            raw_custom_data = getattr(card, "custom_data", "")
+            try:
+                parsed: Any = json.loads(raw_custom_data) if raw_custom_data else {}
+            except (TypeError, json.JSONDecodeError):
+                skipped_count += 1
+                continue
+            if not isinstance(parsed, dict):
+                skipped_count += 1
+                continue
+
+            parsed = cast(dict[str, Any], parsed)
+            changed = False
+            if parsed.get(state.LEGACY_SIBPUSH_SUSPENDED_KEY) is True:
+                if card.queue == QUEUE_TYPE_SUSPENDED:
+                    parsed[state.SIBPUSH_SUSPENDED_KEY] = state.SIBPUSH_MARKER_VALUE
+                    migrated_suspensions += 1
+                parsed.pop(state.LEGACY_SIBPUSH_SUSPENDED_KEY, None)
+                changed = True
+
+            if parsed.get(state.LEGACY_SIBPUSH_IGNORED_KEY) is True:
+                parsed[state.SIBPUSH_IGNORED_KEY] = state.SIBPUSH_MARKER_VALUE
+                parsed.pop(state.LEGACY_SIBPUSH_IGNORED_KEY, None)
+                migrated_ignored += 1
+                changed = True
+
+            if changed:
+                card.custom_data = json.dumps(parsed, ensure_ascii=False) if parsed else ""
+                col.update_card(card)
+
+    def _finish_migration() -> None:
+        if migrated_suspensions or migrated_ignored or skipped_count:
+            logThis(
+                lambda: (
+                    "Progressive Siblings migrated SibPush 2.x markers: "
+                    f"{migrated_suspensions:,} suspension(s), "
+                    f"{migrated_ignored:,} ignored card(s)"
+                    + (f"; skipped {skipped_count:,} invalid payload(s)" if skipped_count else "")
+                )
+            )
+        if on_success is not None:
+            on_success()
+
+    run_chunked(
+        list(candidate_ids),
+        _migrate_chunk,
+        batch_size=MIGRATION_BATCH_SIZE,
+        pause_ms=MIGRATION_BATCH_PAUSE_MS,
+        on_complete=on_complete,
+        on_success=_finish_migration,
+    )
+
+
+def migrate_to_version_3(
+    col: Collection, on_complete: Callable[[], None] | None = None
+) -> None:
+    """Transfer inherited SibPush state, then reconcile every managed note by Stability."""
+
+    completed = False
+    suspension_stage_continued = False
+    ignore_stage_continued = False
+    marker_stage_continued = False
+
+    def _complete() -> None:
+        nonlocal completed
+        if completed:
+            return
+        completed = True
+        if on_complete is not None:
+            on_complete()
+
+    def _finish_reconciliation() -> None:
+        state.reset_persistent_state(col)
+        state.installed_version = state.ADDON_VERSION
+        state.save_persistent_state(col)
+        logThis("Progressive Siblings completed the SibPush migration and FSRS reconciliation")
+
+    def _after_marker_migration() -> None:
+        nonlocal marker_stage_continued
+        marker_stage_continued = True
+        process_all_notes(
+            col,
+            on_complete=_complete,
+            on_success=_finish_reconciliation,
+        )
+
+    def _finish_marker_stage() -> None:
+        if not marker_stage_continued:
+            _complete()
+
+    def _after_ignore_migration() -> None:
+        nonlocal ignore_stage_continued
+        ignore_stage_continued = True
+        migrate_sibpush_2_card_markers(
+            col,
+            on_complete=_finish_marker_stage,
+            on_success=_after_marker_migration,
+        )
+
+    def _finish_ignore_stage() -> None:
+        if not ignore_stage_continued:
+            _complete()
+
+    def _after_suspension_migration() -> None:
+        nonlocal suspension_stage_continued
+        suspension_stage_continued = True
+        migrate_legacy_ignore_markers(
+            col,
+            on_complete=_finish_ignore_stage,
+            on_success=_after_ignore_migration,
+        )
+
+    def _finish_suspension_stage() -> None:
+        if not suspension_stage_continued:
+            _complete()
+
+    migrate_legacy_suspension_tag(
+        col,
+        on_complete=_finish_suspension_stage,
+        on_success=_after_suspension_migration,
+    )
+
+
 def migrate_to_version_2(
     col: Collection, on_complete: Callable[[], None] | None = None
 ) -> None:
@@ -258,8 +398,7 @@ def migrate_to_version_2_1(
 
 
 _STARTUP_MIGRATIONS: tuple[tuple[tuple[int, int, int], StartupMigration], ...] = (
-    (VERSION_2_0_0, migrate_to_version_2),
-    (VERSION_2_1_0, migrate_to_version_2_1),
+    (VERSION_3_0_0, migrate_to_version_3),
 )
 
 

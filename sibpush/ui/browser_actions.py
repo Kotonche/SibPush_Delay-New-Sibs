@@ -7,6 +7,7 @@ from typing import Any, Callable
 from aqt.browser.browser import Browser
 from aqt.qt import QMenu
 
+from ..processing.notes import process_note
 from ..processing.suspension import card_is_ignored, clear_card_ignored, set_card_ignored
 from ..state import get_mw
 
@@ -85,12 +86,12 @@ def add_browser_card_actions(browser: Browser, menu: QMenu) -> None:
     can_insert = notes_action is not None and callable(getattr(menu, "insertMenu", None))
 
     if can_insert:
-        submenu: Any = QMenu("SibPush", menu)
+        submenu: Any = QMenu("Progressive Siblings", menu)
         menu.insertSeparator(notes_action)
         menu.insertMenu(notes_action, submenu)
         menu.insertSeparator(notes_action)
     else:
-        submenu = menu.addMenu("SibPush")
+        submenu = menu.addMenu("Progressive Siblings")
 
     ignore_action: Any = submenu.addAction(label)
     ignore_action.setCheckable(True)
@@ -104,9 +105,16 @@ def add_browser_card_actions(browser: Browser, menu: QMenu) -> None:
             for card in cards:
                 set_card_ignored(col, card)
 
-        save_collection = getattr(col, "save", None)
-        if callable(save_collection):
-            save_collection()
         browser.model.reset()
 
     ignore_action.triggered.connect(handle_ignore_toggle)
+
+    reevaluate_action: Any = submenu.addAction("Re-evaluate selected notes")
+
+    def handle_reevaluate() -> None:
+        note_ids = {card.nid for card in cards}
+        for note_id in note_ids:
+            process_note(col, note_id)
+        browser.model.reset()
+
+    reevaluate_action.triggered.connect(handle_reevaluate)

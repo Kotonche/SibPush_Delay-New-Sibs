@@ -1,9 +1,39 @@
 {
-    "default_interval": 30,
+    "default_stability_threshold": 7,
+    "note_types": {
+        "Greek Vocabulary*": {
+            "enabled": true,
+            "stages": [
+                {
+                    "ord": 0,
+                    "name": "01 · Recognition Boost · Multiple Choice"
+                },
+                {
+                    "ord": 1,
+                    "name": "02 · Recognition · Comprehension"
+                },
+                {
+                    "ord": 2,
+                    "name": "03 · Context Recall · Usage"
+                },
+                {
+                    "ord": 3,
+                    "name": "04 · Active Recall · Production"
+                }
+            ]
+        }
+    },
+    "progression": [],
     "custom_deck_rules": [],
     "tag_rules": {
-        "SibPush-ignored": {
-            "interval": 0
+        "progression::fast": {
+            "stability_threshold": 3
+        },
+        "progression::normal": {
+            "stability_threshold": 7
+        },
+        "progression::slow": {
+            "stability_threshold": 14
         }
     },
     "debug": false

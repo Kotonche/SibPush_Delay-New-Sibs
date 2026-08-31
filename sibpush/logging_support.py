@@ -23,12 +23,15 @@ addon_path = str(_addon_root_path())
 LOG_FILE_path = os.path.join(addon_path, "log.txt")
 
 # Create a named logger for the add-on
-logger = logging.getLogger("SibPush_Delay")
+logger = logging.getLogger("ProgressiveSiblings")
 logger.setLevel(logging.DEBUG)
 logger.propagate = False
 
-# Add a file handler if it doesn't have one yet
-if not logger.handlers:
+def _ensure_file_handler() -> None:
+    """Create the log lazily so debug=false never writes into the add-on directory."""
+
+    if logger.handlers:
+        return
     file_handler = logging.FileHandler(LOG_FILE_path, encoding="UTF-8")
     formatter = logging.Formatter("%(message)s")
     file_handler.setFormatter(formatter)
@@ -42,6 +45,7 @@ def _clear_log_file() -> None:
         None: This function is performed for its side effect.
     """
 
+    _ensure_file_handler()
     for handler in logger.handlers:
         if isinstance(handler, logging.FileHandler) and handler.stream is not None:
             handler.acquire()
@@ -72,6 +76,7 @@ def logThis(arg: Union[str, object], clear: bool = False) -> None:
     from .config.parser import config_settings
 
     if config_settings["debug"]:
+        _ensure_file_handler()
         message: str = str(arg() if callable(arg) else arg)
 
         # Clear the log file if the 'clear' flag is set.

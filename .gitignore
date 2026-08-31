@@ -6,4 +6,5 @@ _-*
 meta.json
 .github
 *.ankiaddon
+dist/
 .serena/

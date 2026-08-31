@@ -20,6 +20,7 @@ from ..state import (
     CONFIG_IGNORED_KEY,
     LEGACY_ADDON_CUSTOM_DATA_IGNORED_VALUE,
     LEGACY_ADDON_CUSTOM_DATA_KEY,
+    PROGRESSIVE_UNLOCKED_KEY,
     SIBPUSH_IGNORED_KEY,
     SIBPUSH_MARKER_VALUE,
     SIBPUSH_SUSPENDED_KEY,
@@ -111,6 +112,12 @@ def card_is_suspended_by_addon(card: Card | CardSnapshot) -> bool:
     return _card_has_marker(card, SIBPUSH_SUSPENDED_KEY)
 
 
+def card_is_unlocked(card: Card | CardSnapshot) -> bool:
+    """Return whether this stage has already been legitimately unlocked."""
+
+    return _card_has_marker(card, PROGRESSIVE_UNLOCKED_KEY)
+
+
 def set_card_ignored(col: Collection, card: Card) -> None:
     """Mark a card as ignored.
 
@@ -138,6 +145,18 @@ def clear_card_suspended_by_addon(col: Collection, card: Card) -> None:
     """Remove only SibPush's suspension provenance marker."""
 
     _mutate_marker(col, card, SIBPUSH_SUSPENDED_KEY, False)
+
+
+def mark_card_unlocked(col: Collection, card: Card) -> None:
+    """Persist one-way progression without changing the card's scheduler state."""
+
+    _mutate_marker(col, card, PROGRESSIVE_UNLOCKED_KEY, True)
+
+
+def clear_card_unlocked(col: Collection, card: Card) -> None:
+    """Remove the one-way progression marker during explicit recovery only."""
+
+    _mutate_marker(col, card, PROGRESSIVE_UNLOCKED_KEY, False)
 
 
 def _marker_search(marker_key: str) -> str:
@@ -293,10 +312,16 @@ def suspend_cards(col: Collection, cards_to_suspend: Sequence[Card], note_id: No
 
 
 def unsuspend_cards(col: Collection, cards_to_unsuspend: Sequence[Card]) -> None:
-    """Unsuspend cards and clear provenance only for successful SibPush restorations."""
+    """Restore only suspensions owned by Progressive Siblings.
+
+    Queue state alone cannot distinguish a user suspension from an add-on suspension. The
+    provenance marker is therefore a hard precondition, including in the normal promotion path.
+    """
 
     card_ids = [
-        card.id for card in cards_to_unsuspend if card.queue == QUEUE_TYPE_SUSPENDED
+        card.id
+        for card in cards_to_unsuspend
+        if card.queue == QUEUE_TYPE_SUSPENDED and card_is_suspended_by_addon(card)
     ]
     if not card_ids:
         return
@@ -340,6 +365,7 @@ def _is_restore_candidate(
     card_id: CardId,
     excluded_card_ids: set[CardId] | None = None,
     deck_id: str | None = None,
+    include_ignored: bool = False,
 ) -> bool:
     """Re-fetch and validate one card immediately before a restoration."""
 
@@ -358,7 +384,7 @@ def _is_restore_candidate(
         and card.type == CARD_TYPE_NEW
         and _card_has_siblings(col, card)
         and card_is_suspended_by_addon(card)
-        and not card_is_ignored(card)
+        and (include_ignored or not card_is_ignored(card))
     )
 
 
@@ -367,13 +393,20 @@ def _restore_chunk(
     candidate_ids: Sequence[CardId],
     excluded_card_ids: set[CardId] | None = None,
     deck_id: str | None = None,
+    include_ignored: bool = False,
 ) -> int:
     """Restore one candidate batch and clear provenance only after success."""
 
     eligible_ids = [
         card_id
         for card_id in candidate_ids
-        if _is_restore_candidate(col, card_id, excluded_card_ids, deck_id)
+        if _is_restore_candidate(
+            col,
+            card_id,
+            excluded_card_ids,
+            deck_id,
+            include_ignored,
+        )
     ]
     if not eligible_ids:
         return 0
@@ -430,7 +463,7 @@ def unsuspend_all_addon_cards_in_deck(col: Collection, deck_id: str) -> None:
 
     def _show_unsuspend_progress(processed_count: int, _total_count: int) -> None:
         tooltip(
-            f"SibPush has restored {processed_count:,}/{total_count:,} cards from the ignored deck",
+            f"Progressive Siblings has restored {processed_count:,}/{total_count:,} cards from the ignored deck",
             period=DECK_UNSUSPEND_TOOLTIP_PERIOD_MS,
         )
 
@@ -479,7 +512,12 @@ def unsuspend_all_addon_cards(
 
     run_chunked(
         card_ids_to_unsuspend,
-        lambda chunk: _restore_chunk(col, chunk, excluded_card_ids),
+        lambda chunk: _restore_chunk(
+            col,
+            chunk,
+            excluded_card_ids,
+            include_ignored=True,
+        ),
         batch_size=DECK_UNSUSPEND_BATCH_SIZE,
         pause_ms=0 if pause_ms is None else pause_ms,
         on_complete=on_complete,

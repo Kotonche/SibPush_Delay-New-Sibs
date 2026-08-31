@@ -83,6 +83,7 @@ class AddonModule(Protocol):
     SIBPUSH_IGNORED_KEY: str
     SIBPUSH_SUSPENDED_KEY: str
     SIBPUSH_MARKER_VALUE: bool
+    PROGRESSIVE_UNLOCKED_KEY: str
     CONFIG_IGNORED_KEY: str
 
 
@@ -150,6 +151,7 @@ def load_addon_module() -> Any:
         SIBPUSH_IGNORED_KEY=state_module.SIBPUSH_IGNORED_KEY,
         SIBPUSH_SUSPENDED_KEY=state_module.SIBPUSH_SUSPENDED_KEY,
         SIBPUSH_MARKER_VALUE=state_module.SIBPUSH_MARKER_VALUE,
+        PROGRESSIVE_UNLOCKED_KEY=state_module.PROGRESSIVE_UNLOCKED_KEY,
         CONFIG_IGNORED_KEY=state_module.CONFIG_IGNORED_KEY,
     )
 
@@ -241,8 +243,19 @@ def patched_addon_state(
     parser_module.config_settings.clear()
     parser_module.config_settings.update(deepcopy(original_config))
     parser_module.config_settings["default_interval"] = TEST_INTERVAL
+    parser_module.config_settings["default_stability_threshold"] = 7.0
     parser_module.config_settings["custom_deck_rules"] = []
     parser_module.config_settings["tag_rules"] = {}
+    parser_module.config_settings["progression"] = []
+    parser_module.config_settings["note_types"] = {
+        "SibPush Test Note": {
+            "enabled": True,
+            "stages": [
+                {"ord": index, "name": f"Card {index + 1}"}
+                for index in range(4)
+            ],
+        }
+    }
     parser_module.ignored_deck_ids[:] = []
     parser_module.custom_deck_rules_by_did.clear()
 

@@ -22,6 +22,7 @@ _addon_constants_state = SimpleNamespace(
     SIBPUSH_IGNORED_KEY="",
     SIBPUSH_SUSPENDED_KEY="",
     SIBPUSH_MARKER_VALUE=True,
+    PROGRESSIVE_UNLOCKED_KEY="",
     CONFIG_IGNORED_KEY="",
 )
 
@@ -34,6 +35,9 @@ def set_addon_constants(addon: object) -> None:
     _addon_constants_state.SIBPUSH_IGNORED_KEY = getattr(addon, "SIBPUSH_IGNORED_KEY", "")
     _addon_constants_state.SIBPUSH_SUSPENDED_KEY = getattr(addon, "SIBPUSH_SUSPENDED_KEY", "")
     _addon_constants_state.SIBPUSH_MARKER_VALUE = getattr(addon, "SIBPUSH_MARKER_VALUE", True)
+    _addon_constants_state.PROGRESSIVE_UNLOCKED_KEY = getattr(
+        addon, "PROGRESSIVE_UNLOCKED_KEY", ""
+    )
     _addon_constants_state.CONFIG_IGNORED_KEY = getattr(addon, "CONFIG_IGNORED_KEY", "")
 
 
@@ -111,6 +115,13 @@ def card_is_suspended_by_addon(col: "Collection", card: "Card") -> bool:
     return card_custom_data(col, card).get(getattr(addon, "SIBPUSH_SUSPENDED_KEY")) is getattr(
         addon, "SIBPUSH_MARKER_VALUE"
     )
+
+
+def card_is_unlocked(col: "Collection", card: "Card") -> bool:
+    addon = _addon_constants()
+    return card_custom_data(col, card).get(
+        getattr(addon, "PROGRESSIVE_UNLOCKED_KEY")
+    ) is getattr(addon, "SIBPUSH_MARKER_VALUE")
 
 
 def assert_card_is_suspended_by_addon(col: "Collection", card: "Card") -> None:

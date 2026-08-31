@@ -11,7 +11,6 @@ from anki.collection import Collection
 from anki.notes import NoteId
 from aqt.utils import tooltip
 
-from ..cards.classification import classify_cards
 from ..cards.formatting import capture_snapshots, format_note_change
 from ..config.parser import config_settings
 from ..logging_support import logThis
@@ -20,13 +19,16 @@ from .query import (
     get_all_child_cards_batch,
     get_child_cards,
     get_new_note_ids,
-    get_note_interval,
     get_modified_note_ids_since,
     should_run_unmanaged_notes,
 )
 from .chunked_runner import run_chunked
+from .progression import card_stability, is_mature, resolve_stages, transition_threshold
 from .suspension import (
     card_is_ignored,
+    card_is_suspended_by_addon,
+    card_is_unlocked,
+    mark_card_unlocked,
     note_is_ignored_deck,
     suspend_cards,
     unsuspend_cards,
@@ -43,19 +45,11 @@ def process_note(
     coming_from_reviewer_hook: bool = False,
     prefetched_siblings: Sequence[Card] | None = None,
 ) -> None:
-    """Process the sibling cards belonging to a single note.
+    """Reconcile one note's stages using card ordinal and FSRS Stability.
 
-    This is the heart of SibPush. It implements the core logic:
-
-    1. If there are immature cards (interval < threshold), suspend all new cards
-    2. If all cards are mature, unsuspend the first new card and suspend the rest
-    3. If coming from the reviewer (user just answered a card), bury the next new card
-       for tomorrow to avoid showing it immediately after its sibling matured
-
-    The algorithm ensures proper spacing between sibling cards by:
-    - Keeping new siblings suspended while any sibling is still immature
-    - Only introducing one new sibling at a time (first card stays active, rest suspended)
-    - Preventing immediate review by burying when coming from reviewer hook
+    The progression is monotonic. A reviewed card or a card carrying the unlocked marker is
+    treated as previously reached even if its current Stability later falls. Suspended cards are
+    restored only when their suspension provenance belongs to this add-on.
 
     Args:
         col (anki.collection.Collection): The collection that owns the note.
@@ -72,116 +66,91 @@ def process_note(
     """
 
     debug_enabled = bool(config_settings["debug"])
-
-    # STEP 1: Get the sibling cards for this note
-    # Either use prefetched cards from a batch query, or query the database for this note
     siblings = (
         prefetched_siblings if prefetched_siblings is not None else get_child_cards(col, note_id)
     )
-
-    # Early exit: Single-card notes don't have siblings to manage
     if len(siblings) <= 1:
         return
 
-    # Sort siblings by due date to maintain Anki's original card order
-    # This ensures we process cards in the sequence the user expects
-    siblings = sorted(siblings, key=lambda card: card.due)
-
-    # STEP 2: Check if this deck is configured to be ignored
-    # Ignored decks skip all SibPush processing
     if coming_from_reviewer_hook and note_is_ignored_deck(siblings[0]):
-        # When coming from reviewer hook, we need to check manually since ignored
-        # decks aren't filtered out of the reviewer workflow
-        # (Browser-driven scans already exclude ignored decks in the search query)
         return
 
-    # STEP 3: Capture state before processing (for debug logging)
-    before_snapshots = capture_snapshots(siblings) if debug_enabled else None
-
-    all_new_cards = [card for card in siblings if card.type == CARD_TYPE_NEW and not card_is_ignored(card)]
     note = siblings[0].note()
+    stages = [stage for stage in resolve_stages(note, siblings) if not card_is_ignored(stage.card)]
+    if len(stages) <= 1:
+        return
 
-    # STEP 4: Determine the maturity threshold for this note
-    # Check tag rules first, then deck rules, then fall back to default interval
-    interval_threshold = get_note_interval(note, siblings[0])
-
-    # STEP 5: Classify siblings into new cards and immature cards
-    # Immature = reviewed but interval < threshold (still learning)
-    # New = never reviewed yet (candidates for suspension)
-    new_cards, immature_cards = classify_cards(siblings, interval_threshold)
-
-    # Variables for tracking actions taken (used in debug logging)
-    action_taken: str | None = None
+    before_snapshots = capture_snapshots(siblings) if debug_enabled else None
+    actions: list[str] = []
     changed = False
 
-    # DECISION TREE: Two main branches based on whether immature cards exist
-
-    if immature_cards:
-        # BRANCH A: There are immature siblings - suspend ALL new cards
-        # This prevents learning new siblings while old ones are still maturing
-        new_cards_to_suspend = [card for card in new_cards if card.queue != QUEUE_TYPE_SUSPENDED]
-
-        if not new_cards_to_suspend:
-            # All new cards are already suspended - nothing to do
-            return
-
-        # Suspend the new cards and tag the note as addon-managed
-        suspend_cards(col, new_cards_to_suspend, note_id)
-        action_taken = f"Suspend {len(new_cards_to_suspend)} new card(s)"
+    # The first existing stage is always logically available, but a user suspension is respected.
+    first = stages[0]
+    if not card_is_unlocked(first.card):
+        mark_card_unlocked(col, first.card)
+        actions.append(f"mark {first.name} unlocked")
         changed = True
-    else:
-        # BRANCH B: No immature cards - all siblings are either new or mature
-        # Strategy: Keep first new card active, suspend the rest, unsuspend if needed
+    if first.card.queue == QUEUE_TYPE_SUSPENDED and card_is_suspended_by_addon(first.card):
+        unsuspend_cards(col, [first.card])
+        actions.append(f"restore first stage {first.name}")
+        changed = True
 
-        if not all_new_cards:
-            # No new cards left to process - all cards are mature or learning
-            return
+    for previous, target in zip(stages, stages[1:]):
+        threshold = transition_threshold(note, previous, target)
+        stability = card_stability(previous.card)
+        previously_reached = target.card.type != CARD_TYPE_NEW or card_is_unlocked(target.card)
+        eligible_now = is_mature(previous.card, threshold)
+        should_be_available = previously_reached or eligible_now
+        newly_unlocked = should_be_available and not card_is_unlocked(target.card)
 
-        first_new_card = all_new_cards[0]
-        first_card_is_suspended = first_new_card.queue == QUEUE_TYPE_SUSPENDED
-        promoted_card: Card | None = None
-        new_cards_to_suspend: list[Card] = []
+        if debug_enabled:
+            logThis(
+                lambda previous=previous, target=target, threshold=threshold, stability=stability,
+                previously_reached=previously_reached, eligible_now=eligible_now: (
+                    "[Progressive Siblings] "
+                    f"note={note_id} from={previous.name!r} ord={previous.ord} "
+                    f"stability={stability!r} threshold={threshold:g} mature={eligible_now} "
+                    f"to={target.name!r} ord={target.ord} previously_reached={previously_reached}"
+                )
+            )
 
-        if first_card_is_suspended:
-            unsuspend_cards(col, [first_new_card])
-            promoted_card = first_new_card
-            changed = True
-            action_taken = "Unsuspend the first new card"
+        if should_be_available:
+            if newly_unlocked:
+                mark_card_unlocked(col, target.card)
+                actions.append(f"unlock {target.name}")
+                changed = True
 
-        for card in all_new_cards[1:]:
-            card_is_suspended = card.queue == QUEUE_TYPE_SUSPENDED
+            if (
+                target.card.queue == QUEUE_TYPE_SUSPENDED
+                and card_is_suspended_by_addon(target.card)
+            ):
+                unsuspend_cards(col, [target.card])
+                actions.append(f"restore {target.name}")
+                changed = True
 
-            if not card_is_suspended:
-                new_cards_to_suspend.append(card)
+            if coming_from_reviewer_hook and newly_unlocked:
+                fresh_target = col.get_card(target.card.id)
+                if (
+                    fresh_target.type == CARD_TYPE_NEW
+                    and fresh_target.queue != QUEUE_TYPE_SUSPENDED
+                    and fresh_target.queue != QUEUE_TYPE_SIBLING_BURIED
+                ):
+                    col.sched.bury_cards(ids=[fresh_target.id], manual=False)
+                    actions.append(f"bury {target.name} until tomorrow")
+                    changed = True
+            continue
 
-        if not new_cards_to_suspend and promoted_card is None:
-            return
+        # Only future New cards can be locked. Review history and manually suspended cards are
+        # never rewritten, and an unlocked marker permanently wins over a later Stability drop.
+        if target.card.type == CARD_TYPE_NEW and target.card.queue != QUEUE_TYPE_SUSPENDED:
+            suspend_cards(col, [target.card], note_id)
+            fresh_target = col.get_card(target.card.id)
+            if fresh_target.queue == QUEUE_TYPE_SUSPENDED:
+                actions.append(f"keep {target.name} locked")
+                changed = True
 
-        if new_cards_to_suspend:
-            suspend_cards(col, new_cards_to_suspend, note_id)
-            changed = True
-
-        bury_target: Card | None = None
-        if coming_from_reviewer_hook:
-            if promoted_card is not None and promoted_card.queue != QUEUE_TYPE_SIBLING_BURIED:
-                bury_target = promoted_card
-
-        if bury_target is not None:
-            col.sched.bury_cards(ids=[bury_target.id], manual=False)
-            changed = True
-
-        action_bits: list[str] = []
-        if action_taken is not None:
-            action_bits.append(action_taken)
-        if coming_from_reviewer_hook and bury_target is not None:
-            action_bits.append("bury it for tomorrow")
-        if new_cards_to_suspend:
-            action_bits.append(f"suspend {len(new_cards_to_suspend)} trailing new card(s)")
-        if action_bits:
-            action_taken = "; ".join(action_bits)
-
-    if debug_enabled and changed and action_taken:
-        updated_siblings = sorted(get_child_cards(col, note_id), key=lambda card: card.due)
+    if debug_enabled and changed:
+        updated_siblings = sorted(get_child_cards(col, note_id), key=lambda card: card.ord)
         after_snapshots = capture_snapshots(updated_siblings)
         logThis(
             lambda: format_note_change(
@@ -190,7 +159,7 @@ def process_note(
                 note_id,
                 before_snapshots or [],
                 after_snapshots,
-                action_taken,
+                "; ".join(actions),
             )
         )
 
@@ -236,7 +205,7 @@ def _show_modified_note_progress(processed_count: int, total_count: int) -> None
     """Show a short tooltip describing modified-note scan progress."""
 
     tooltip(
-        f"SibPush has processed {processed_count:,}/{total_count:,} notes",
+            f"Progressive Siblings has processed {processed_count:,}/{total_count:,} notes",
         period=MODIFIED_NOTE_TOOLTIP_PERIOD_MS,
     )
 

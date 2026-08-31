@@ -70,11 +70,21 @@ def _default_pending_browser_work() -> dict[str, Any]:
 _pending_browser_work = _default_pending_browser_work()
 
 # Card custom-data keys must be alphanumeric and no longer than 8 bytes in this Anki build.
-# Keep the two independent marker keys centralized so callers and tests use the exact persisted
-# names without duplicating storage details.
-SIBPUSH_SUSPENDED_KEY = "sibpsusp"
-SIBPUSH_IGNORED_KEY = "sibpign"
-SIBPUSH_MARKER_VALUE = True
+# Progressive Siblings owns a separate namespace so it can coexist with SibPush during migration.
+PROGRESSIVE_SUSPENDED_KEY = "prgsusp"
+PROGRESSIVE_IGNORED_KEY = "prgign"
+PROGRESSIVE_UNLOCKED_KEY = "prgunlk"
+PROGRESSIVE_MARKER_VALUE = True
+
+# Compatibility aliases keep the inherited SibPush infrastructure working while user-facing
+# naming and migration code move to Progressive Siblings terminology.
+SIBPUSH_SUSPENDED_KEY = PROGRESSIVE_SUSPENDED_KEY
+SIBPUSH_IGNORED_KEY = PROGRESSIVE_IGNORED_KEY
+SIBPUSH_MARKER_VALUE = PROGRESSIVE_MARKER_VALUE
+
+# Markers written by SibPush 2.x. They are never used for new writes.
+LEGACY_SIBPUSH_SUSPENDED_KEY = "sibpsusp"
+LEGACY_SIBPUSH_IGNORED_KEY = "sibpign"
 
 # The old representation is read only by migration and defensive compatibility paths. It must
 # not be used for new writes because it cannot represent independent marker state.
@@ -86,11 +96,11 @@ LEGACY_ADDON_CUSTOM_DATA_IGNORED_VALUE = "ignored"
 ADDON_CUSTOM_DATA_KEY = SIBPUSH_IGNORED_KEY
 ADDON_CUSTOM_DATA_IGNORED_VALUE = SIBPUSH_MARKER_VALUE
 CONFIG_IGNORED_KEY = "ignored"
-ADDON_VERSION = "2.3.0"  # Update this when releasing a new version
-BREAKING_CHANGE_VERSION = "2.1.0"  # This release changes persisted card custom-data semantics.
+ADDON_VERSION = "3.0.0"  # First Progressive Siblings release based on SibPush 2.3.0.
+BREAKING_CHANGE_VERSION = "3.0.0"
 VERSION_KEY = "addon_version"
-STATE_FILENAME = "sibpush_state.json"
-CONFIG_FILENAME = "sibpush_config.json"
+STATE_FILENAME = "progressive_siblings_state.json"
+CONFIG_FILENAME = "progressive_siblings_config.json"
 _persistent_state_loaded = False
 
 installed_version: str | None = None  # The last installed version of the add-on, loaded from the state file. This is used to determine if the breaking-change recovery flow needs to run.

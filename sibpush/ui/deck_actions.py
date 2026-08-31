@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any, cast
 
 import aqt
 from aqt.qt import QInputDialog, QMenu
+from aqt.utils import askUser, tooltip
 
 from ..config.parser import get_custom_deck_rule_snapshot, update_custom_deck_rule
+from ..processing.chunked_runner import run_chunked
+from ..processing.notes import process_note
+from ..processing.suspension import unsuspend_all_addon_cards
 from ..state import CONFIG_IGNORED_KEY, SIBPUSH_IGNORED_KEY, get_mw
 
 
@@ -76,12 +80,12 @@ def _toggle_ignore_state(deck_id: int) -> None:
         str(deck_id),
         deck_name,
         ignored=not snapshot[CONFIG_IGNORED_KEY],
-        interval=snapshot["interval"],
+        stability_threshold=snapshot["stability_threshold"],
     )
 
 
-def _set_custom_interval(deck_id: int) -> None:
-    """Prompt for and save a custom interval for one deck.
+def _set_custom_stability_threshold(deck_id: int) -> None:
+    """Prompt for and save a custom FSRS Stability threshold for one deck.
 
     This function displays a dialog prompting the user to enter a custom
     maturity interval (in days) for the specified deck. The interval determines
@@ -100,14 +104,14 @@ def _set_custom_interval(deck_id: int) -> None:
 
     deck_name = _get_deck_name(col, deck_id)
     snapshot = get_custom_deck_rule_snapshot(str(deck_id))
-    value, accepted = QInputDialog.getInt(
+    value, accepted = QInputDialog.getDouble(
         get_mw(),
-        "Set SibPush deck interval",
-        f"Enter the maturity interval for '{deck_name}'",
-        snapshot["interval"],
+        "Progressive Siblings — Stability threshold",
+        f"Minimum FSRS Stability in days for '{deck_name}'",
+        snapshot["stability_threshold"],
         0,
         100000,
-        1,
+        2,
     )
     if not accepted:
         return
@@ -116,7 +120,51 @@ def _set_custom_interval(deck_id: int) -> None:
         str(deck_id),
         deck_name,
         ignored=snapshot[CONFIG_IGNORED_KEY],
-        interval=value,
+        stability_threshold=value,
+    )
+
+
+def _reprocess_deck(deck_id: int) -> None:
+    """Reconcile all managed notes that have a card in the selected deck."""
+
+    col = _get_collection()
+    if col is None:
+        return
+
+    note_ids = list(col.find_notes(f"did:{deck_id}"))
+
+    def _process_chunk(chunk: Sequence[int]) -> None:
+        for note_id in chunk:
+            process_note(col, note_id)
+
+    run_chunked(
+        note_ids,
+        _process_chunk,
+        batch_size=500,
+        pause_ms=100,
+        on_success=lambda: tooltip(
+            f"Progressive Siblings reprocessed {len(note_ids):,} note(s)"
+        ),
+    )
+
+
+def _restore_all_managed_cards(_: int) -> None:
+    """Expose the provenance-aware recovery command required for safe removal."""
+
+    col = _get_collection()
+    current_mw = get_mw()
+    if col is None or current_mw is None:
+        return
+    if not askUser(
+        "Restore every New card currently suspended by Progressive Siblings?\n\n"
+        "Cards suspended manually will not be changed.",
+        parent=current_mw,
+        defaultno=True,
+    ):
+        return
+    unsuspend_all_addon_cards(
+        col,
+        on_success=lambda: tooltip("Progressive Siblings restored its managed cards"),
     )
 
 
@@ -173,7 +221,7 @@ def add_deck_actions_to_options_menu(menu: QMenu, deck_id: int) -> None:
         return
 
     snapshot = get_custom_deck_rule_snapshot(str(deck_id))
-    submenu = menu.addMenu("SibPush")
+    submenu = menu.addMenu("Progressive Siblings")
     if submenu is None:
         return
 
@@ -182,7 +230,15 @@ def add_deck_actions_to_options_menu(menu: QMenu, deck_id: int) -> None:
     _add_action(submenu, ignore_label, _toggle_ignore_state, deck_id)
 
     # Add the custom interval configuration action
-    _add_action(submenu, "Set custom interval…", _set_custom_interval, deck_id)
+    _add_action(
+        submenu,
+        "Set Stability threshold…",
+        _set_custom_stability_threshold,
+        deck_id,
+    )
+
+    _add_action(submenu, "Reprocess deck", _reprocess_deck, deck_id)
 
     # Add an action to search the browser for cards ignored by SibPush in this deck
     _add_action(submenu, "Show ignored cards…", _show_ignored_cards_in_browser, deck_id)
+    _add_action(submenu, "Restore all managed cards…", _restore_all_managed_cards, deck_id)

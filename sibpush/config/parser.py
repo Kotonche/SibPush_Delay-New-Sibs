@@ -177,13 +177,34 @@ def _parse_int(value: Any, default: int) -> int:
         return default
 
 
+def _parse_threshold(value: Any, default: float) -> float:
+    """Parse a non-negative Stability threshold in days."""
+
+    try:
+        threshold = float(value)
+    except (TypeError, ValueError):
+        return default
+    return threshold if threshold >= 0 else default
+
+
+def _default_stability_threshold(config: dict[str, Any] | None) -> float:
+    """Read the Progressive setting with SibPush's interval key as a migration fallback."""
+
+    if config is None:
+        return 7.0
+    return _parse_threshold(
+        config.get("default_stability_threshold", config.get("default_interval", 7)),
+        7.0,
+    )
+
+
 def parse_int(value: Any, default: int) -> int:
     """Parse an integer for callers outside this parser module."""
 
     return _parse_int(value, default)
 
 
-def _normalize_custom_deck_rule(rule: Any, default_interval: int) -> dict[str, Any] | None:
+def _normalize_custom_deck_rule(rule: Any, default_interval: float) -> dict[str, Any] | None:
     """Normalize one custom deck rule into the canonical schema.
 
     Args:
@@ -204,15 +225,21 @@ def _normalize_custom_deck_rule(rule: Any, default_interval: int) -> dict[str, A
     if not did and not name:
         return None
 
+    stability_threshold = _parse_threshold(
+        rule_dict.get("stability_threshold", rule_dict.get("interval", default_interval)),
+        default_interval,
+    )
     return {
         "did": did,
         "name": name,
         CONFIG_IGNORED_KEY: bool(rule_dict.get(CONFIG_IGNORED_KEY, False)),
-        "interval": _parse_int(rule_dict.get("interval", default_interval), default_interval),
+        "stability_threshold": stability_threshold,
+        # Kept during the UI migration; inherited deck actions still read this alias.
+        "interval": stability_threshold,
     }
 
 
-def _normalize_tag_rule(rule: Any, default_interval: int) -> dict[str, Any] | None:
+def _normalize_tag_rule(rule: Any, default_interval: float) -> dict[str, Any] | None:
     """Normalize one tag rule into the canonical schema.
 
     Args:
@@ -227,7 +254,14 @@ def _normalize_tag_rule(rule: Any, default_interval: int) -> dict[str, Any] | No
         return None
 
     rule_dict = cast(dict[str, object], rule)
-    return {"interval": _parse_int(rule_dict.get("interval", default_interval), default_interval)}
+    stability_threshold = _parse_threshold(
+        rule_dict.get("stability_threshold", rule_dict.get("interval", default_interval)),
+        default_interval,
+    )
+    return {
+        "stability_threshold": stability_threshold,
+        "interval": stability_threshold,
+    }
 
 
 def _parse_custom_deck_rules(config: dict[str, Any] | None) -> list[dict[str, Any]]:
@@ -243,7 +277,7 @@ def _parse_custom_deck_rules(config: dict[str, Any] | None) -> list[dict[str, An
     if config is None:
         return []
 
-    default_interval = _parse_int(config.get("default_interval", 30), 30)
+    default_interval = _default_stability_threshold(config)
     raw_rules = config.get("custom_deck_rules")
     if isinstance(raw_rules, list):
         typed_rules = cast(list[object], raw_rules)
@@ -292,16 +326,18 @@ def _index_custom_deck_rules(custom_deck_rules: list[dict[str, Any]]) -> dict[st
 
 def _extract_custom_deck_rule_effects(
     config_settings: dict[str, Any],
-) -> dict[str, tuple[bool, int]]:
-    """Return the effective ignore/interval state for each explicitly configured deck."""
+) -> dict[str, tuple[bool, float]]:
+    """Return the effective ignore/Stability state for each configured deck."""
 
-    default_interval = _parse_int(config_settings.get("default_interval", 30), 30)
+    default_threshold = _parse_threshold(
+        config_settings.get("default_stability_threshold", 7), 7.0
+    )
     raw_rules = config_settings.get("custom_deck_rules")
     if not isinstance(raw_rules, list):
         return {}
 
     typed_rules = cast(list[object], raw_rules)
-    rule_effects: dict[str, tuple[bool, int]] = {}
+    rule_effects: dict[str, tuple[bool, float]] = {}
     for rule in typed_rules:
         if not isinstance(rule, dict):
             continue
@@ -313,7 +349,13 @@ def _extract_custom_deck_rule_effects(
 
         rule_effects[did] = (
             bool(rule_dict.get(CONFIG_IGNORED_KEY, False)),
-            _parse_int(rule_dict.get("interval", default_interval), default_interval),
+            _parse_threshold(
+                rule_dict.get(
+                    "stability_threshold",
+                    rule_dict.get("interval", default_threshold),
+                ),
+                default_threshold,
+            ),
         )
 
     return rule_effects
@@ -333,9 +375,23 @@ def _should_invalidate_processing_state(
     Ignoring a deck is intentionally excluded because that path only queues deck cleanup.
     """
 
-    previous_default_interval = _parse_int(previous_config_settings.get("default_interval", 30), 30)
-    current_default_interval = _parse_int(current_config_settings.get("default_interval", 30), 30)
-    if previous_default_interval != current_default_interval:
+    previous_default_threshold = _parse_threshold(
+        previous_config_settings.get("default_stability_threshold", 7), 7.0
+    )
+    current_default_threshold = _parse_threshold(
+        current_config_settings.get("default_stability_threshold", 7), 7.0
+    )
+    if previous_default_threshold != current_default_threshold:
+        return True
+
+    if previous_config_settings.get("note_types", {}) != current_config_settings.get(
+        "note_types", {}
+    ):
+        return True
+
+    if previous_config_settings.get("progression", []) != current_config_settings.get(
+        "progression", []
+    ):
         return True
 
     if previous_config_settings.get("tag_rules", {}) != current_config_settings.get(
@@ -349,10 +405,10 @@ def _should_invalidate_processing_state(
 
     for deck_id in all_deck_ids:
         previous_ignored, previous_interval = previous_deck_effects.get(
-            deck_id, (False, previous_default_interval)
+            deck_id, (False, previous_default_threshold)
         )
         current_ignored, current_interval = current_deck_effects.get(
-            deck_id, (False, current_default_interval)
+            deck_id, (False, current_default_threshold)
         )
 
         if previous_interval != current_interval:
@@ -403,12 +459,21 @@ def get_custom_deck_rule_snapshot(deck_id: str) -> dict[str, Any]:
     """
 
     rule = get_custom_deck_rule(deck_id) or {}
-    default_interval = _parse_int(config_settings.get("default_interval", 30), 30)
+    default_threshold = _parse_threshold(
+        config_settings.get("default_stability_threshold", 7), 7.0
+    )
     return {
         "did": str(deck_id).strip(),
         "name": str(rule.get("name", "")).strip(),
         CONFIG_IGNORED_KEY: bool(rule.get(CONFIG_IGNORED_KEY, False)),
-        "interval": _parse_int(rule.get("interval", default_interval), default_interval),
+        "stability_threshold": _parse_threshold(
+            rule.get("stability_threshold", rule.get("interval", default_threshold)),
+            default_threshold,
+        ),
+        "interval": _parse_threshold(
+            rule.get("interval", rule.get("stability_threshold", default_threshold)),
+            default_threshold,
+        ),
     }
 
 
@@ -437,7 +502,7 @@ def _prepare_custom_deck_rule(
         raise ValueError("deck_id cannot be empty")
 
     normalized_deck_name = str(deck_name).strip() or normalized_deck_id
-    default_interval = _parse_int(config.get("default_interval", 30), 30)
+    default_interval = _default_stability_threshold(config)
     custom_deck_rules = cast(list[dict[str, Any]], config.setdefault("custom_deck_rules", []))
 
     rule: dict[str, Any] | None = next(
@@ -455,6 +520,7 @@ def _prepare_custom_deck_rule(
             "name": normalized_deck_name,
             CONFIG_IGNORED_KEY: False,
             "interval": default_interval,
+            "stability_threshold": default_interval,
         }
         custom_deck_rules.append(rule)
     else:
@@ -462,6 +528,9 @@ def _prepare_custom_deck_rule(
         rule["name"] = normalized_deck_name
         rule.setdefault(CONFIG_IGNORED_KEY, False)
         rule.setdefault("interval", default_interval)
+        rule.setdefault(
+            "stability_threshold", rule.get("interval", default_interval)
+        )
 
     return rule
 
@@ -560,6 +629,7 @@ def update_custom_deck_rule(
     *,
     ignored: bool | None = None,
     interval: int | None = None,
+    stability_threshold: float | None = None,
 ) -> dict[str, Any]:
     """Update one deck rule and save the resulting configuration.
 
@@ -582,8 +652,10 @@ def update_custom_deck_rule(
     if ignored is not None:
         rule[CONFIG_IGNORED_KEY] = ignored
 
-    if interval is not None:
-        rule["interval"] = interval
+    updated_threshold = stability_threshold if stability_threshold is not None else interval
+    if updated_threshold is not None:
+        rule["interval"] = updated_threshold
+        rule["stability_threshold"] = updated_threshold
 
     save_config_state(updated_config)
     return rule
@@ -621,7 +693,7 @@ def _parse_tag_rules(config: dict[str, Any] | None) -> dict[str, dict[str, Any]]
     if config is None:
         return {}
 
-    default_interval = _parse_int(config.get("default_interval", 30), 30)
+    default_interval = _default_stability_threshold(config)
     raw_rules = config.get("tag_rules")
     if not isinstance(raw_rules, dict):
         return {}
@@ -654,10 +726,8 @@ def parse_config(
         dict[str, bool | int | list[dict[str, Any]]]: The normalized runtime settings.
     """
 
-    debug = bool(config["debug"]) if config is not None else False
-    default_interval = (
-        _parse_int(config.get("default_interval", 30), 30) if config is not None else 30
-    )
+    debug = bool(config.get("debug", False)) if config is not None else False
+    default_interval = _default_stability_threshold(config)
     custom_deck_rules = _parse_custom_deck_rules(config)
     tag_rules = _parse_tag_rules(config)
 
@@ -668,8 +738,11 @@ def parse_config(
     return {
         "debug": debug,
         "default_interval": default_interval,
+        "default_stability_threshold": default_interval,
         "custom_deck_rules": custom_deck_rules,
         "tag_rules": tag_rules,
+        "note_types": deepcopy(config.get("note_types", {})) if config is not None else {},
+        "progression": deepcopy(config.get("progression", [])) if config is not None else [],
     }
 
 
@@ -677,7 +750,7 @@ def parse_config(
 # This happens when Anki loads the add-on, ensuring config is available immediately.
 addon_manager: Any | None = getattr(mw, "addonManager", None) if mw else None
 config: dict[str, Any] | None = None
-config_settings: dict[str, bool | int | list[dict[str, Any]]] = parse_config(None)
+config_settings: dict[str, Any] = parse_config(None)
 
 
 def on_config_display(config_text: str) -> str:
@@ -744,9 +817,11 @@ def on_config_save(config_text: str, addon: str) -> str:
             lambda: (
                 "Config updated: "
                 f"debug={config_settings['debug']}, "
-                f"default_interval={config_settings['default_interval']}, "
+                f"default_stability_threshold={config_settings['default_stability_threshold']}, "
                 f'custom_deck_rules={config_settings["custom_deck_rules"]}, '
                 f'tag_rules={config_settings["tag_rules"]}, '
+                f'note_types={config_settings["note_types"]}, '
+                f'progression={config_settings["progression"]}, '
                 f"ignored_deck_ids={ignored_deck_ids}"
             )
         )

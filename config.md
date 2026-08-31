@@ -1,84 +1,94 @@
-# Configuration Guide
+# Progressive Siblings configuration
 
-## `default_interval`
+## `default_stability_threshold`
 
--   **Type**: Integer
--   **Description**: Defines the interval (in days) required for a card to be considered "matured". Decks that are not listed in `custom_deck_rules` use this value.
--   **Example**: `"default_interval": 30` means that cards with an interval of 30 days or more are considered matured by default.
+Global fallback threshold in Stability days. Default: `7`. A card with no FSRS memory state is
+always immature, regardless of its interval.
+
+## `note_types`
+
+Explicit allowlist of managed note types. Keys may be exact names or shell-style patterns such as
+`Greek Vocabulary*` for versioned models.
+
+Each enabled rule may contain a `stages` array. `ord` is authoritative; `name` validates that a
+template was not accidentally reordered or renamed. Only cards that actually exist are processed,
+so optional missing templates are valid.
+
+```json
+{
+  "note_types": {
+    "Greek Vocabulary*": {
+      "enabled": true,
+      "stages": [
+        {"ord": 0, "name": "01 · Recognition Boost · Multiple Choice"},
+        {"ord": 1, "name": "02 · Recognition · Comprehension"}
+      ]
+    }
+  }
+}
+```
+
+## `progression`
+
+Optional named per-transition thresholds. Names must match the validated template names.
+
+```json
+{
+  "progression": [
+    {"from": "Stage 1", "to": "Stage 2", "stability": 5},
+    {"from": "Stage 2", "to": "Stage 3", "stability": 10}
+  ]
+}
+```
 
 ## `custom_deck_rules`
 
--   **Type**: List of objects
--   **Description**: Specifies the decks that should use a custom rule. Each entry uses the deck ID (`did`) as the stable identifier; `name` is only for readability in the config file. `interval` overrides `default_interval` for that deck.
+Deck-specific rules use `did` as the authoritative identifier. `name` is informational.
 
-    The deck browser also exposes a `SibPush` submenu for the current deck so you can toggle `ignored` or update `interval` without editing the config file directly.
+```json
+{
+  "custom_deck_rules": [
+    {
+      "did": "123456789",
+      "name": "Greek Vocabulary",
+      "ignored": false,
+      "stability_threshold": 7
+    }
+  ]
+}
+```
 
--   **Example**:
-
-    ```json
-    "custom_deck_rules": [
-        {
-            "did": "1777739665453",
-            "name": "Siblings",
-            "ignored": false,
-            "interval": 18
-        },
-        {
-            "did": "1777739665454",
-            "name": "Big Deck",
-            "ignored": true,
-            "interval": 30
-        }
-    ]
-    ```
-
-    -   `did` is the deck ID Anki assigns to the deck.
-    -   `name` is a human-friendly label shown only for convenience.
-    -   `ignored: true` skips that deck entirely.
-    -   `ignored: false` keeps that deck active under `default_interval`.
-    -   `interval` is the maturity threshold for that specific deck.
-
-    Ignoring a deck also restores only currently suspended new sibling cards that SibPush marked
-    as suspended. User-suspended cards, review cards, standalone cards, and individually ignored
-    cards are not restored.
+Ignoring a deck queues provenance-aware restoration and excludes it from later processing.
 
 ## `tag_rules`
 
--   **Type**: Dictionary of tag names to rule objects
--   **Description**: Specifies note tags that should override the deck interval. Each key is a tag name, and each rule currently uses `interval` to define the maturity threshold for notes with that tag. Tag rules take precedence over deck rules, but they do not apply inside ignored decks.
--   **Example**:
+The first matching configured tag wins and overrides deck, transition, and global thresholds.
 
-    ```json
-    "tag_rules": {
-        "easy_topic": {
-            "interval": 0
-        },
-        "hard_topic": {
-            "interval": 30
-        }
-    }
-    ```
-
-    -   The first matching tag rule in the config wins when a note has multiple matching tags.
-    -   Use `interval` to override the maturity threshold for notes with that tag.
-    -   If a deck is ignored, SibPush skips the note entirely even if a tag rule matches.
+```json
+{
+  "tag_rules": {
+    "progression::fast": {"stability_threshold": 3},
+    "progression::normal": {"stability_threshold": 7},
+    "progression::slow": {"stability_threshold": 14}
+  }
+}
+```
 
 ## `debug`
 
--   **Type**: Boolean (true or false)
--   **Description**: Enables or disables logging of the addon operations.
-    -   `true`: Logging is enabled. You can view the logs by accessing the `log.txt` file via the 'View files' option of the addon.
-    -   `false`: Logging is disabled.
--   **Example**: `"debug": false`
+When `true`, progression decisions are written to `log.txt` in the add-on directory. The log
+includes note ID, stage names and ordinals, Stability, threshold, maturity result, and action.
 
-## Card ignore and suspension provenance
+## Precedence
 
-**SibPush → Ignore card** is a metadata-only opt-out. The selected card keeps its current queue,
-including a suspension, and any SibPush suspension provenance is retained. Clearing the card
-ignore marker does not automatically unsuspend it.
+For each transition:
 
-Manual unsuspension does not erase SibPush's suspension provenance. If SibPush later suspends the
-card again, explicit deck-ignore or add-on deletion cleanup may restore it because the marker is
-still authoritative. Cards store the suspension-provenance marker as `sibpsusp` and the
-individual-card ignore marker as `sibpign`. These are the exact custom-data keys written by
-SibPush.
+1. first matching tag rule;
+2. source card's deck-ID rule;
+3. matching entry in `progression`;
+4. `default_stability_threshold`.
+
+## Compatibility aliases
+
+During migration, legacy `default_interval` and rule-level `interval` values are accepted as
+Stability thresholds. New configuration should use the Stability names shown above.

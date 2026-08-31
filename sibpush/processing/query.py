@@ -11,6 +11,13 @@ from anki.notes import Note, NoteId
 
 from ..config.parser import config_settings, custom_deck_rules_by_did, ignored_deck_ids
 from ..state import get_last_unmanaged_note_ids
+from .progression import get_note_type_rule
+
+
+def _managed_note_ids(col: Collection, note_ids: Sequence[NoteId]) -> list[NoteId]:
+    """Filter batch candidates before sibling Card objects are hydrated."""
+
+    return [note_id for note_id in note_ids if get_note_type_rule(col.get_note(note_id)) is not None]
 
 
 def get_tag_rule(note: Note) -> dict[str, Any] | None:
@@ -64,12 +71,13 @@ def get_new_note_ids(col: Collection) -> Sequence[NoteId]:
     # Keep only notes that have more than one card; single-card notes are skipped later
     # anyway, so filtering them here avoids an extra card lookup for notes with no siblings.
     nid_list = ",".join(str(n) for n in all_new_nids)
-    return cast(
+    candidate_note_ids = cast(
         list[NoteId],
         db.list(
             f"SELECT nid FROM cards WHERE nid IN ({nid_list}) GROUP BY nid HAVING COUNT(*) > 1"
         ),
     )
+    return _managed_note_ids(col, candidate_note_ids)
 
 
 def get_new_unmanaged_note_ids(col: Collection) -> Sequence[NoteId]:
@@ -103,12 +111,13 @@ def get_new_unmanaged_note_ids(col: Collection) -> Sequence[NoteId]:
     # This uses the same sibling-count pruning as the full scan, but also excludes notes
     # already marked with the add-on tag so the recurring unmanaged pass stays narrow.
     nid_list = ",".join(str(n) for n in all_new_nids)
-    return cast(
+    candidate_note_ids = cast(
         list[NoteId],
         db.list(
             f"SELECT nid FROM cards WHERE nid IN ({nid_list}) GROUP BY nid HAVING COUNT(*) > 1"
         ),
     )
+    return _managed_note_ids(col, candidate_note_ids)
 
 
 def _build_ignored_deck_exclusion_clause(note_id_expression: str) -> str:
@@ -176,12 +185,13 @@ def get_modified_note_ids_since(col: Collection, modified_since: int) -> Sequenc
         return []
 
     nid_list = ",".join(str(n) for n in candidate_note_ids)
-    return cast(
+    grouped_note_ids = cast(
         list[NoteId],
         db.list(
             f"SELECT nid FROM cards WHERE nid IN ({nid_list}) GROUP BY nid HAVING COUNT(*) > 1"
         ),
     )
+    return _managed_note_ids(col, grouped_note_ids)
 
 
 def get_deck_rule(card: Card) -> dict[str, Any] | None:
@@ -201,43 +211,6 @@ def get_deck_rule_by_id(deck_id: str) -> dict[str, Any] | None:
     """Look up the current custom deck rule for a stable deck id."""
 
     return custom_deck_rules_by_did.get(str(deck_id))
-
-
-def get_deck_interval(card: Card) -> int:
-    """Return the effective interval threshold for a card's deck.
-
-    Args:
-        card (anki.cards.Card): The card whose deck interval should be resolved.
-
-    Returns:
-        int: The configured interval threshold for the card's deck.
-    """
-
-    rule = get_deck_rule(card)
-    if rule is None:
-        return cast(int, config_settings["default_interval"])
-
-    return int(rule["interval"])
-
-
-def get_note_interval(note: Note, card: Card) -> int:
-    """Return the effective interval threshold for a note.
-
-    Tag rules take precedence over deck rules, and the first matching tag rule in the config wins.
-
-    Args:
-        note (anki.notes.Note): The note whose tags should be inspected.
-        card (anki.cards.Card): A card from the note used to resolve the deck rule fallback.
-
-    Returns:
-        int: The configured interval threshold for the note.
-    """
-
-    tag_rule = get_tag_rule(note)
-    if tag_rule is not None:
-        return int(tag_rule["interval"])
-
-    return get_deck_interval(card)
 
 
 def get_child_cards(col: Collection, note_id: NoteId) -> Sequence[Card]:

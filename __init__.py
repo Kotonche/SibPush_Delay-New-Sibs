@@ -1,4 +1,4 @@
-"""Anki add-on entrypoint that registers the add-on hooks."""
+"""Progressive Siblings add-on entrypoint."""
 
 from __future__ import annotations
 

@@ -1,7 +1,7 @@
 {
-    "name": "sibpush_delay-new-sibs",
-    "version": "1.0.0",
-    "description": "Anki Addon to delay new Sibs",
+    "name": "progressive-siblings-for-anki",
+    "version": "3.0.0",
+    "description": "Unlock ordered Anki sibling templates using FSRS Stability",
     "main": "index.js",
     "directories": {
         "doc": "docs"
@@ -16,9 +16,9 @@
     "keywords": [
         "Anki",
         "Addon",
-        "Delay",
-        "New",
-        "Cards"
+        "FSRS",
+        "Stability",
+        "Progression"
     ],
     "author": "Bassim ELBAKKALI ELGAZAUNI",
     "license": "BSD-3-Clause",

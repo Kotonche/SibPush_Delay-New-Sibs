@@ -2,10 +2,62 @@
 
 from __future__ import annotations
 
+import json
+from copy import deepcopy
 from typing import Any, cast
 
 from . import parser
 from ..state import CONFIG_IGNORED_KEY, get_config_file_path, get_mw
+
+
+def _load_sibpush_profile_config() -> dict[str, Any] | None:
+    """Read SibPush's collection-adjacent config without modifying the original file."""
+
+    progressive_path = get_config_file_path()
+    if progressive_path is None:
+        return None
+    sibpush_path = progressive_path.with_name("sibpush_config.json")
+    try:
+        with sibpush_path.open("r", encoding="utf-8") as handle:
+            payload: Any = json.load(handle)
+    except (OSError, json.JSONDecodeError, ValueError):
+        return None
+    return cast(dict[str, Any], payload) if isinstance(payload, dict) else None
+
+
+def _merge_sibpush_config(
+    progressive_defaults: dict[str, Any], sibpush_config: dict[str, Any]
+) -> dict[str, Any]:
+    """Carry deck/tag policy forward while retaining Progressive note-type definitions."""
+
+    migrated = deepcopy(progressive_defaults)
+    default_threshold = sibpush_config.get("default_interval", 7)
+    migrated["default_stability_threshold"] = default_threshold
+    migrated["debug"] = bool(sibpush_config.get("debug", migrated.get("debug", False)))
+
+    migrated_deck_rules: list[dict[str, Any]] = []
+    raw_deck_rules = sibpush_config.get("custom_deck_rules", [])
+    if isinstance(raw_deck_rules, list):
+        for raw_rule in raw_deck_rules:
+            if not isinstance(raw_rule, dict):
+                continue
+            rule = dict(raw_rule)
+            rule["stability_threshold"] = rule.pop("interval", default_threshold)
+            migrated_deck_rules.append(rule)
+    migrated["custom_deck_rules"] = migrated_deck_rules
+
+    migrated_tag_rules: dict[str, dict[str, Any]] = {}
+    raw_tag_rules = sibpush_config.get("tag_rules", {})
+    if isinstance(raw_tag_rules, dict):
+        for raw_tag, raw_rule in raw_tag_rules.items():
+            if not isinstance(raw_rule, dict):
+                continue
+            migrated_tag_rules[str(raw_tag)] = {
+                "stability_threshold": raw_rule.get("interval", default_threshold)
+            }
+    if migrated_tag_rules:
+        migrated["tag_rules"] = migrated_tag_rules
+    return migrated
 
 
 def _get_deck_lookup() -> dict[str, str]:
@@ -97,6 +149,14 @@ def migrate_legacy_config() -> bool:
     if not isinstance(current_config, dict):
         return False
     current_config = cast(dict[str, Any], current_config)
+
+    sibpush_profile_config = _load_sibpush_profile_config()
+    if sibpush_profile_config is not None:
+        migrated_config = _merge_sibpush_config(current_config, sibpush_profile_config)
+        parser.save_profile_config(migrated_config)
+        parser.config_settings.clear()
+        parser.config_settings.update(parser.parse_config(migrated_config))
+        return True
 
     if "ignored_decks" in current_config:
         migrated_config = _build_migrated_config(current_config, _get_deck_lookup())

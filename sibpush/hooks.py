@@ -1,4 +1,4 @@
-"""Anki hook callbacks for the SibPush add-on.
+"""Anki hook callbacks for the Progressive Siblings add-on.
 
 This module registers the Anki hooks that drive SibPush's sibling management.
 The add-on uses several hooks to monitor and respond to user actions:
@@ -167,7 +167,7 @@ def browser_render(browser: Any) -> None:
     """
 
     if not browser or not browser.mw.col:
-        raise Exception("SibPush : Anki is not initialized properly")
+        raise Exception("Progressive Siblings: Anki is not initialized properly")
 
     col = browser.mw.col
 
@@ -262,7 +262,7 @@ def reviewer_did_answer_card(reviewer: Any, card: Card, _: int) -> None:
     """
 
     if not reviewer or not reviewer.mw or not reviewer.mw.col:
-        raise Exception("SibPush : Anki is not initialized properly")
+        raise Exception("Progressive Siblings: Anki is not initialized properly")
 
     process_note(reviewer.mw.col, card.nid, coming_from_reviewer_hook=True)
 
@@ -277,7 +277,7 @@ def sync_did_finish(*_: Any) -> None:
 
     current_mw = get_mw()
     if current_mw is None or not getattr(current_mw, "col", None):
-        raise Exception("SibPush : Anki is not initialized properly")
+        raise Exception("Progressive Siblings: Anki is not initialized properly")
 
     # Sync only records the new watermark and sets a follow-up flag; browser render performs
     # the actual note processing later.
@@ -365,9 +365,9 @@ def on_addon_delete(_: Any, ids: list[str]) -> None:
                     confirmed = False
                     if ignored_count > 0:
                         confirmed = _ask_user(
-                            f"{ignored_count} card(s) in your collection have been marked as ignored by SibPush. "
+                            f"{ignored_count} card(s) in your collection have been marked as ignored by Progressive Siblings. "
                             f"Do you want to clear this marker now?\n\n"
-                            f"If you clear it, reinstalling SibPush later will not remember which cards were ignored.",
+                            f"If you clear it, reinstalling Progressive Siblings later will not remember which cards were ignored.",
                             parent=current_mw,
                             defaultno=True,
                         )
@@ -390,7 +390,6 @@ def on_addon_delete(_: Any, ids: list[str]) -> None:
 
                     unsuspend_all_addon_cards(
                         col,
-                        excluded_card_ids=ignored_card_ids,
                         on_complete=_finish_restore_stage,
                         on_success=_after_restore,
                     )

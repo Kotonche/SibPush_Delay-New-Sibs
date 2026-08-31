@@ -1,81 +1,119 @@
-# SibPush: Delay New Sibling Cards in Anki
+# Progressive Siblings for Anki
 
-<center>
-    <img src="docs/images/illustration.png" alt="SibPush Illustration">
-</center>
+Progressive Siblings is an Anki Desktop add-on that unlocks sibling card templates in explicit
+`card.ord` order. A later stage becomes available only after the immediately preceding existing
+stage reaches the configured **FSRS Stability** threshold.
 
-## Overview
+The add-on controls availability only. It never changes Stability, Difficulty, desired retention,
+review history, interval, or due date. FSRS remains fully responsible for scheduling every stage
+after it has been unlocked.
 
-Meet SibPush, your Anki addon that likes to keep new sibling cards at a chill distance. It suspends new sibling cards until their older siblings have matured, then brings them back when the deck browser is opened again. No more awkward family reunions in your review sessions!
+## Default workflow
 
-## Purpose
+The bundled configuration supports the versioned `Greek Vocabulary` note type created by
+`anki-cards-ai-generator`:
 
-So here’s the deal. Normally when you bump into a new card, Anki shoves its siblings to the side for just a day. Not cool, right? SibPush steps in to save the "spaced" in spaced repetition. It suspends the new siblings that should wait and checks for recovery on the next deck browser render. Once the remaining siblings are mature enough, the suspended cards are unsuspended again. This way, you get to avoid cramming and actually remember stuff long-term. It’s all about keeping the learning groove going at a neat pace.
+1. `01 · Recognition Boost · Multiple Choice`
+2. `02 · Recognition · Comprehension`
+3. `03 · Context Recall · Usage`
+4. `04 · Active Recall · Production`
 
-Unlike other similar addons that only act when a note is reviewed in AnkiDesktop, SibPush uses multiple triggers so it can catch up after syncs. That means reviews on AnkiMobile and AnkiWeb still get processed when the desktop collection reloads.
+On a new note, only ordinal 0 remains active. Later New cards are suspended with add-on-owned
+provenance. When a preceding card reaches Stability 7 days, the next existing ordinal is unlocked.
+An unlock triggered directly by a Desktop review is buried until the next Anki day.
 
-## Usage
+Progression is one-way. Once a stage has been reached, a later drop in Stability does not lock it
+again. A missing optional card is skipped without error.
 
-1. Install the addon at [Anki Addons](https://ankiweb.net/shared/info/1856111213) .
-2. That's it! Review your decks as usual, and SibPush will take care of the rest, ensuring that new cards are introduced at the right time.
+## Safety
+
+Progressive Siblings stores independent short markers in Anki card custom data:
+
+- `prgsusp`: this add-on owns the current suspension;
+- `prgunlk`: the stage has legitimately been unlocked;
+- `prgign`: the card is excluded from progression management.
+
+Only a card carrying `prgsusp` can be automatically unsuspended. A card suspended manually by the
+user is never restored by progression or recovery.
+
+Use **Progressive Siblings → Restore all managed cards…** in a deck menu before uninstalling if
+you want an explicit recovery pass. Add-on deletion runs the same provenance-aware restoration.
 
 ## Configuration
 
-The configuration of SibPush is straightforward and can be tailored to meet your study needs. Here are the settings you can tweak in the config file:
+The most important settings are:
 
-- `default_interval`: The interval (in days) that must be surpassed by all siblings before new cards are introduced for review. Decks that are not listed in `custom_deck_rules` use this value. Default is `30`.
-
-- `custom_deck_rules`: A list of deck-specific rules. Each rule uses the deck ID (`did`) as the stable identifier, while `name` is only there to make the config easier to read. Set `ignored` to `true` to exclude a deck from the SibPush mechanism. Use `interval` to override the maturity threshold for that specific deck.
-
-    You can manage the current deck's SibPush rule from the deck browser's `SibPush` submenu instead of editing JSON by hand.
-
-    ![SibPush Configuration](docs/images/deck_options.png)
-
-    When you ignore a deck, SibPush queues the cleanup work and applies it on the next deck browser render, so the browser remains the single batch-processing doorway.
-
-    Ignoring a deck restores only currently suspended new sibling cards that SibPush previously
-    suspended. Cards suspended by you, review cards, standalone cards, and individually ignored cards
-    are left unchanged. The restoration marker remains authoritative if you manually unsuspend and
-    later re-suspend a card; use **Ignore card** when you want SibPush to stop managing that card.
-
-- `tag_rules`: A dictionary of tag-specific rules. Each key is a note tag name, and each rule uses `interval` to override the maturity threshold for notes with that tag. Tag rules take precedence over deck rules, but ignored decks still win.
-
-- `debug`: Set to `true` if you are debugging. When `debug` is true, the addon will log more information to `log.txt` file, which can be helpful for troubleshooting.
-
-    Example:
-
-    ```json
-    {
-        "custom_deck_rules": [
-            {
-                "did": "1777739665453",
-                "name": "Country Capitals",
-                "ignored": false,
-                "interval": 18
-            }
-        ],
-        "tag_rules": {
-            "easy_topic": {
-                "interval": 0
-            }
-        }
+```json
+{
+  "default_stability_threshold": 7,
+  "note_types": {
+    "Greek Vocabulary*": {
+      "enabled": true,
+      "stages": [
+        {"ord": 0, "name": "01 · Recognition Boost · Multiple Choice"},
+        {"ord": 1, "name": "02 · Recognition · Comprehension"},
+        {"ord": 2, "name": "03 · Context Recall · Usage"},
+        {"ord": 3, "name": "04 · Active Recall · Production"}
+      ]
     }
-    ```
+  },
+  "progression": [],
+  "custom_deck_rules": [],
+  "tag_rules": {},
+  "debug": false
+}
+```
 
-### Ignoring a deck
+`note_types` is an allowlist and supports shell-style name patterns. Template names are validated
+against their configured ordinal; a mismatch leaves the note untouched and is written to the log
+when debug mode is enabled.
 
-To exclude a deck from SibPush entirely, open the deck browser, right-click (or use the `SibPush` menu next to the deck) and enable **Ignore deck**.
+Per-transition thresholds are optional:
 
-### Ignoring a card
+```json
+{
+  "progression": [
+    {"from": "Card 1", "to": "Card 2", "stability": 5},
+    {"from": "Card 2", "to": "Card 3", "stability": 7}
+  ]
+}
+```
 
-To exclude one or multiple cards from SibPush, open the **Card Browser**, select the card (or multiple cards), right-click, and toggle **SibPush → Ignore card**. The menu item is a checkbox: tick it to ignore, untick it to restore normal management. Ignored cards are excluded from the SibPush processing.
+Threshold precedence is: matching tag rule, deck-ID rule, named transition, global default. See
+[config.md](config.md) for the complete schema.
 
-Ignoring an individual card changes only SibPush metadata. It never suspends or unsuspends the
-card, and it preserves any SibPush suspension provenance and unrelated card custom data. If the
-add-on is deleted, the same provenance-aware cleanup is used; individually ignored cards remain
-untouched during restoration, even if their ignored marker is later cleared in the confirmation
-dialog.
+## Desktop, mobile, and sync
 
----
+Desktop reviews process only the affected note. After an AnkiMobile, AnkiDroid, or AnkiWeb review,
+the Desktop sync hook records a watermark and the next deck-browser render reconciles changed
+notes. Low-frequency reconciliation is chunked so large collections yield back to the Qt event
+loop between batches.
 
-Happy studying!
+## Migrating from SibPush
+
+Disable SibPush before enabling Progressive Siblings so the two add-ons do not compete for card
+state. On first startup, Progressive Siblings can transfer:
+
+- `sibpsusp` and `sibpign` card markers;
+- the older `SibPush-suspended` tag representation;
+- deck, tag, ignore, and threshold rules from `sibpush_config.json`.
+
+The original SibPush config file is not modified. After migration, managed notes are reconciled
+from their current FSRS memory states without resetting scheduling history.
+
+## Development
+
+The acceptance suite uses a real temporary Anki collection and covers the specification's A–H
+scenarios plus template validation, recovery, migration, and missing-memory-state behavior:
+
+```bash
+python run_tests.py
+```
+
+The current implementation is tested against Anki 26.8.1.
+
+## Origin and license
+
+Progressive Siblings is based on
+[DerDemystifier/SibPush_Delay-New-Sibs](https://github.com/DerDemystifier/SibPush_Delay-New-Sibs)
+and preserves its BSD 3-Clause license and attribution.
