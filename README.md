@@ -112,6 +112,12 @@ python run_tests.py
 
 The current implementation is tested against Anki 26.8.1.
 
+## Local installation
+
+Disable the original SibPush add-on first, restart Anki, then install
+`dist/progressive-siblings.ankiaddon` with **Tools → Add-ons → Install from file…** and restart
+Anki again. The package includes the manifest required for installation outside AnkiWeb.
+
 ## Origin and license
 
 Progressive Siblings is based on

@@ -8,7 +8,14 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 ROOT = Path(__file__).resolve().parent
 OUTPUT = ROOT / "dist" / "progressive-siblings.ankiaddon"
-ROOT_FILES = ("__init__.py", "config.json", "config.md", "LICENSE", "README.md")
+ROOT_FILES = (
+    "__init__.py",
+    "manifest.json",
+    "config.json",
+    "config.md",
+    "LICENSE",
+    "README.md",
+)
 
 
 def package_files() -> list[Path]:
